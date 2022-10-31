@@ -1,0 +1,316 @@
+
+ ### Production & services ###
+services:
+
+   # Watchtower docker update service
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    profiles:
+      - prod
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/localtime:/etc/localtime:ro
+
+   # Pi-Hole ad blocker
+  pihole:
+    container_name: pihole
+    image: pihole/pihole:latest
+    restart: unless-stopped
+    hostname: pihole
+    profiles:
+      - prod
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "67:67/udp"
+      - "8081:80/tcp"
+    dns:
+      - 127.0.0.1
+    environment:
+      TZ: "Europe/Helsinki"
+      WEBPASSWORD_FILE: "/run/secrets/pihole_web_password"
+      ServerIP: 172.18.0.100
+      DNS1: 195.74.0.47
+      DNS2: 195.197.54.100
+    volumes:
+      - $HOME/docker/pihole/etc/pihole/:/etc/pihole/
+      - $HOME/docker/pihole/etc/etc-dnsmasq.d/:/etc/dnsmasq.d/
+    secrets:
+      - pihole_web_password
+    cap_add:
+      - NET_ADMIN
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.100
+
+   # Wireguard VPN server
+  wireguard:
+    depends_on:
+      - pihole
+    image: lscr.io/linuxserver/wireguard
+    container_name: wireguard
+    profiles:
+      - prod
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "Europe/Helsinki"
+      SERVERURL: "myserver.url"
+      SERVERPORT: "51820"
+      PEERS: "device1,device2,device3,device4"
+      PEERDNS: "172.18.0.100"
+      LOG_CONFS: "true"
+      INTERNAL_SUBNET: "172.18.1.0"
+      LOG_CONFS: "true"
+    volumes:
+      - $HOME/docker/wireguard/config:/config
+      - /lib/modules:/lib/modules
+    ports:
+      - "51820:51820/udp"
+    dns:
+      - 172.18.0.100
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    restart: unless-stopped
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.101
+
+   # Bitwarden password manager server
+  bitwarden:
+    image: vaultwarden/server:latest
+    container_name: bitwarden
+    profiles:
+      - prod
+    expose:
+      - "80"
+      - "3012"
+    volumes:
+      - $HOME/docker/bitwarden/data:/data
+    environment:
+      WEBSOCKET_ENABLED: "true"
+    restart: unless-stopped
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.102
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    profiles:
+      - prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - $HOME/docker/nginx:/etc/nginx
+      - $HOME/.certs:/etc/ssl
+    restart: unless-stopped
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.103
+
+   # Nextcloud server
+  postgres:
+    image: postgres
+    container_name: postgres
+    profiles:
+      - prod
+    volumes:
+      - /$HOME/docker/postgres:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: "/run/secrets/postgres_db"
+      POSTGRES_USER: "/run/secrets/postgres_user"
+      POSTGRES_PASSWORD: "/run/secrets/postgres_password"
+    secrets:
+      - postgres_db
+      - postgres_password
+      - postgres_user
+    restart: unless-stopped
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.104
+
+  nextcloud:
+    image: nextcloud
+    container_name: nextcloud
+    profiles:
+      - prod
+    ports:
+      - 8082:80
+    volumes:
+      - $HOME/docker/nextcloud:/var/www/html
+    environment:
+      POSTGRES_HOST: "postgres"
+      POSTGRES_DB_FILE: "/run/secrets/postgres_db"
+      POSTGRES_USER_FILE: "/run/secrets/postgres_user"
+      POSTGRES_PASSWORD_FILE: "/run/secrets/postgres_password"
+      NEXTCLOUD_ADMIN_USER_FILE: "/run/secrets/nextcloud_admin_user"
+      NEXTCLOUD_ADMIN_PASSWORD_FILE: "/run/secrets/nextcloud_admin_password"
+    depends_on:
+      - postgres
+    secrets:
+      - postgres_db
+      - postgres_password
+      - postgres_user
+      - nextcloud_admin_user
+      - nextcloud_admin_password
+    restart: unless-stopped
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.105
+
+   # HomeAssistant home automation system
+  homeassistant:
+    image: "ghcr.io/home-assistant/home-assistant:stable"
+    container_name: homeassistant
+    depends_on:
+      - pihole
+    profiles:
+      - prod
+    ports:
+      - "8123:8123"
+    volumes:
+      - $HOME/docker/homeassistant/config:/config
+      - $HOME/media:/media
+      - /etc/localtime:/etc/localtime:ro
+    restart: unless-stopped
+    privileged: true
+    dns:
+      - 172.18.0.100
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.106
+
+
+ ### Media ###
+
+   # Jellyfin media server
+  jellyfin:
+    image: jellyfin/jellyfin
+    container_name: jellyfin
+    depends_on:
+      - pihole
+    profiles:
+      - media
+    ports:
+      - "8096:8096"
+      - "8920:8920"
+      - "7359:7359/udp"
+#      - "1900:1900/udp"
+    volumes:
+      - $HOME/docker/jellyfin/config:/config
+      - $HOME/docker/jellyfin/cache:/cache
+      - $HOME/media:/media
+    devices:
+      - /dev/dri/renderD128:/dev/dri/renderD128
+      - /dev/dri/card0:/dev/dri/card0
+    environment:
+      TZ: "Europe/Helsinki"
+    group_add:
+      - "989"
+    restart: unless-stopped
+    dns:
+      - 172.18.0.100
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.107
+
+   # Plex media server
+  plex:
+    image: plexinc/pms-docker:plexpass
+    container_name: plex
+    depends_on:
+      - pihole
+    profiles:
+      - media
+    ports:
+      - "32400:32400/tcp"
+      - "3005:3005/tcp"
+      - "8324:8324/tcp"
+      - "32469:32469/tcp"
+#      - "1900:1900/udp"
+      - "32410:32410/udp"
+      - "32412:32412/udp"
+      - "32413:32413/udp"
+      - "32414:32414/udp"
+    volumes:
+      - $HOME/docker/plex/config:/config
+      - $HOME/docker/plex/transcode:/transcode
+      - $HOME/media:/data
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      TZ: "Europe/Helsinki"
+    #      PLEX_CLAIM: ''
+    restart: unless-stopped
+    dns:
+      - 172.18.0.100
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.108
+
+   # Navidrome music service
+  navidrome:
+    image: deluan/navidrome:latest
+    container_name: navidrome
+    depends_on:
+      - pihole
+    profiles:
+       - media
+    ports:
+      - "4533:4533"
+    volumes:
+       - $HOME/docker/navidrome/data:/data
+       - $HOME/media/music:/music
+    restart: unless-stopped
+    dns:
+      - 172.18.0.100
+    networks:
+      private_network:
+        ipv4_address: 172.18.0.109
+
+
+ ### Gaming & Steam ###
+
+   # Steam card faming app
+  asf:
+    image: justarchi/archisteamfarm
+    container_name: asf
+    profiles:
+      - steam
+    volumes:
+      - $HOME/docker/asf/config:/app/config
+      - $HOME/docker/asf/logs:/app/logs
+      - $HOME/docker/asf/plugins:/app/plugins
+    restart: unless-stopped
+    network_mode: host
+
+
+ ### Networks ###
+networks:
+  private_network:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.18.0.0/16
+
+
+ ### Secrets ###
+secrets:
+  pihole_web_password:
+    file: $HOME/secrets/pihole_web_password.txt
+  postgres_db:
+    file: $HOME/secrets/postgres_db.txt
+  postgres_user:
+    file: $HOME/secrets/postgres_user.txt
+  postgres_password:
+    file: $HOME/secrets/postgres_password.txt
+  nextcloud_admin_user:
+    file: $HOME/secrets/nextcloud_admin_user.txt
+  nextcloud_admin_password:
+    file: $HOME/secrets/nextcloud_admin_password.txt
